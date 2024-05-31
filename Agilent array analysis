@@ -1,0 +1,107 @@
+# 清空环境，移除所有变量
+rm(list = ls())
+# 设置工作目录到指定路径
+setwd('D:\\Test\\Assay\\GSE10667')
+# 加载所需的R包
+library(stringr)     # 用于字符串操作
+library(AnnoProbe)   # 用于注释和探针信息
+library(GEOquery)    # 用于获取GEO数据
+library(limma)       # 用于线性模型和微阵列数据分析
+# 设置下载超时时间为3000秒
+options(timeout = 3000)
+
+# 下载GSE10667数据集，禁用注释文件和平台文件
+eset <- getGEO("GSE10667", destdir=".", AnnotGPL = F, getGPL = F)
+
+# 保存下载的数据到Rdata文件
+save(eset, file = "GSE10667_eSet.Rdata")
+
+rm(list = ls())
+# 载入之前保存的GSE10667数据
+load('GSE10667_eSet.Rdata')
+
+# 提取样本的元数据（样本描述信息）
+pd <- pData(eset[[1]])
+
+# 设置包含原始数据文件的目录
+raw_dir = "D:/Test/Assay/GSE10667/sampFile"
+# 获取目录中的所有文件名，并拼接完整路径
+raw_datas = paste0(raw_dir,"/",dir(raw_dir))
+# 选择第3到第48个文件
+raw_datas = raw_datas[3:48]
+
+# 从文件名中提取GSM编号
+raw_order = str_extract(raw_datas,"GSM\\d*")
+# 根据GSM编号重新排序样本描述信息，使其与文件顺序一致
+pd = pd[match(raw_order,rownames(pd)),]
+# 选择第3到第48个样本
+pd <- pd[3:48, ]
+
+# 根据source_name_ch1列的内容创建分组列表
+group_list <- ifelse(word(pd$source_name_ch1, 1) == 'normal', 'Normal',
+                     ifelse(word(pd$source_name_ch1, 5) == 'interstitial', 'UID', 'IPF'))
+group_list <- factor(group_list, levels=c("Normal","UID","IPF"))
+
+# 读取原始数据文件，指定来源为Agilent，且只读取绿色通道数据
+x <- read.maimages(raw_datas,
+                   source="agilent", 
+                   green.only=TRUE,
+                   other.columns = "gIsWellAboveBG")
+
+# 显示读取的数据的维度
+dim(x)
+
+# 对数据进行背景校正，使用normexp方法
+y <- backgroundCorrect(x, method="normexp")
+
+# 对数据进行数组间标准化，使用分位数标准化方法
+y <- normalizeBetweenArrays(y, method="quantile")
+# 检查对象y的类
+class(y)
+
+# 检查哪些探针是控制探针
+Control <- y$genes$ControlType==1L;table(Control)
+
+# 检查哪些探针没有基因名称
+NoSymbol <- is.na(y$genes$GeneName);table(NoSymbol)
+
+# 检查哪些探针在至少16个样本中显著表达
+IsExpr <- rowSums(y$other$gIsWellAboveBG > 0) >= 16;table(IsExpr)
+
+# 检查哪些探针的基因名称是重复的
+Isdup <- duplicated(y$genes$GeneName);table(Isdup)
+
+# 过滤掉控制探针、没有基因名称的探针、不显著表达的探针和重复的探针
+yfilt <- y[!Control & !NoSymbol & IsExpr & !Isdup, ]
+dim(yfilt)
+
+# 提取表达矩阵数据
+exp = yfilt@.Data[[1]]
+# 绘制表达矩阵数据的箱线图
+boxplot(exp)
+# 显示表达矩阵数据的总结信息
+summary(exp)
+# 显示表达矩阵的前两行两列
+exp[1:2,1:2]
+
+# 提取GSM编号作为列名
+colnames(exp) = str_extract(colnames(exp),"GSM\\d*")
+# 再次显示表达矩阵的前两行两列
+exp[1:2,1:2]
+
+# 提取注释信息
+anno = yfilt$genes
+nrow(anno);nrow(exp)
+
+# 设置表达矩阵的行名为注释信息的行名
+rownames(exp)=rownames(anno)
+# 提取唯一的基因名称
+ids = unique(anno$GeneName)
+# 移除重复的基因名称
+exp = exp[!duplicated(anno$GeneName),]
+# 设置表达矩阵的行名为唯一的基因名称
+rownames(exp) = ids
+exp[1:4,1:4]
+# 保存表达矩阵、样本描述信息和分组列表到文件
+save(exp, pd, group_list,  file = "Step1_output.Rdata")
+rm(list = ls())
